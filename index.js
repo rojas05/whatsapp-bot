@@ -2,7 +2,8 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const express = require('express');
 const cors = require('cors');
-const { obtenerRedireccionGrupos, guardarRedireccionGrupos } = require('./redireccion');
+const { guardarGrupoLocal, obtenerGruposLocales, eliminarGrupoPorNombre } = require('./storage');
+const { hour } = require('./hora');
 require('dotenv').config();
 
 const app = express();
@@ -11,43 +12,85 @@ app.use(cors());
 
 const SESSION_PATH = process.env.SESSION_PATH;
 
-//Guardar credenciales de usuario
+// Variables en memoria
+let gruposRegistrados = obtenerGruposLocales();
+
+// Función centralizada para errores
+function logError(context, error) {
+    console.error(`${hour()} ::: [${context}]`, error);
+}
+
+// Cliente WhatsApp
 const client = new Client({
     authStrategy: new LocalAuth({
         dataPath: SESSION_PATH
     }),
     puppeteer: {
+        executablePath: '/usr/bin/chromium-browser',
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--disable-gpu',
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process',
+            '--disable-extensions'
+        ]
     }
 });
 
-//generar qr para inicio de cesion
+// QR de inicio de sesión
 client.on('qr', (qr) => {
-    console.log('📲 Escanea este código QR para conectar:');
+    console.log(hour(), '📲 Escanea este código QR para conectar:');
     qrcode.generate(qr, { small: true });
 });
 
-//verificar la secion
+// Bot listo
 client.on('ready', () => {
-    console.log('✅ Bot de WhatsApp conectado y listo');
+    console.log(hour(), '✅ Bot de WhatsApp conectado y listo');
 });
 
-//Listener de mensaje enviado
+// Solo mensajes que salen
 client.on('message_create', async (msg) => {
-    if (msg.fromMe) {
-        await manejarMensajeAdminBot(msg);
-    }
+    if (msg.fromMe) await manejarMensajeAdminBot(msg);
 });
 
-//Listener de mensaje resivido
+
+// Solo mensajes que llegan
 client.on('message', async (msg) => {
-    if (!msg.fromMe) {
-        await manejarMensajeAdminBot(msg);
-    }
+    if (!msg.fromMe) await manejarMensajeAdminBot(msg);
 });
 
-//Funcion para manejar mensaje con mencion
+// Manejo general
+async function manejarMensajeAdminBot(msg) {
+    try {
+        const chat = await msg.getChat();
+        const isAdminBot = chat.isGroup && chat.name.toLowerCase() === 'adminbot';
+        const body = msg.body.toLowerCase();
+
+        if (isAdminBot) {
+            if (body === 'grupos') {
+                await sentMensaggesAdminGrup(chat);
+            } else if (body.startsWith('delete')) {
+                await deleteGrup(chat, msg);
+            } else if (body.startsWith('registrar grupo')) {
+                await registerMensaggesAdminGrup(chat, msg);
+            }else if (body.startsWith('grupos registrados')) {
+                await sentMensaggesAdminGrupRegister(chat, msg);
+            }
+        } else {
+            await manejarMensaje(msg);
+        }
+
+    } catch (error) {
+        logError("AdminBot", error);
+    }
+}
+
+// Mensaje desde otro grupo (reenviar)
 async function manejarMensaje(msg) {
     try {
         const chat = await msg.getChat();
@@ -55,47 +98,46 @@ async function manejarMensaje(msg) {
         if (chat.isGroup) {
             const nombreGrupo = chat.name.toLowerCase();
 
-            const redireccionGrupos = await obtenerRedireccionGrupos();
-
-            if (redireccionGrupos[nombreGrupo]) {
-                const destinoId = redireccionGrupos[nombreGrupo];
+            if (gruposRegistrados[nombreGrupo]) {
+                const destinoId = gruposRegistrados[nombreGrupo];
                 const grupoDestino = await client.getChatById(destinoId);
                 const contenido = msg.body;
 
-                let mentions = [];
-                let text = contenido + '\n';
+                // Mencionar a todos los participantes
+                const mentions = grupoDestino.participants.map(p => p.id._serialized);
+                const text = contenido + '\n';
 
-                for (let participant of grupoDestino.participants) {
-                    mentions.push(participant.id._serialized);
+                try {
+                    // Intentar enviar el mensaje a todos los participantes
+                    await grupoDestino.sendMessage(text, { mentions });
+                    console.log(hour(), `✅ Reenviado de "${chat.name}" a ${destinoId}`);
+                } catch (error) {
+                    // En caso de error, loguear el error pero no detener el servicio
+                    logError("Error al reenviar mensaje", error);
                 }
-
-                await grupoDestino.sendMessage(text, { mentions });
-                console.log(`✅ Reenviado de "${chat.name}" a ${destinoId}`);
             }
         }
     } catch (error) {
-        console.error("❌ Error al reenviar mensaje:", error);
+        logError("Error en el manejo de mensaje", error);
     }
 }
 
-//Mensajes para tegistro o consulta de grupos
-async function manejarMensajeAdminBot(msg) {
+// Mostrar grupos disponibles para mencion
+async function sentMensaggesAdminGrupRegister(chat) {
     try {
-        const chat = await msg.getChat();
-
-        if (chat.isGroup && chat.name.toLowerCase() === 'adminbot') {
-            if(msg.body.toLowerCase() === 'grupos'){
-                sentMensaggesAdminGrup(chat)
-            }
-            if(msg.body.startsWith('Registrar grupo')){
-                registerMensaggesAdminGrup(chat,msg)
-            }
-        } else{
-            manejarMensaje(msg)
+        if (Object.keys(gruposRegistrados).length === 0) {
+            await chat.sendMessage("🤖 No hay grupos registrados.");
+            return;
         }
 
+        let respuesta = "📋 *Lista de Grupos Registrados:*\n\n";
+        for (const nombre in gruposRegistrados) {
+            respuesta += `• *${nombre}*\n  ID: \`${gruposRegistrados[nombre]}\`\n\n`;
+        }
+
+        await chat.sendMessage(respuesta);
     } catch (error) {
-        console.error("❌ Error al procesar mensaje:", error);
+        logError("Mostrar grupos", error);
     }
 }
 
@@ -118,29 +160,75 @@ async function sentMensaggesAdminGrup(chat) {
     }
 }
 
-//Mensaje para registrar un nuevo grupo
-async function registerMensaggesAdminGrup(chat,msg) {
-    try{
+// Registrar nuevo grupo
+async function registerMensaggesAdminGrup(chat, msg) {
+    try {
         const nombreMatch = msg.body.match(/nombre:\s*(\S+)/i);
         const idMatch = msg.body.match(/grupoId:\s*([a-zA-Z0-9@.\-_]+)/i);
 
         if (nombreMatch && idMatch) {
-            const nombre = nombreMatch[1];
+            const nombre = nombreMatch[1].toLowerCase();
             const grupoId = idMatch[1];
 
-            await guardarRedireccionGrupos(nombre,grupoId)
+            try {
+                const grupo = await client.getChatById(grupoId);
+                const nombreGrupoReal = grupo.name.toLowerCase();
 
-            await chat.sendMessage(`✅ Grupo registrado correctamente:\n📛 Nombre: *${nombre}*\n🆔 ID: \`${grupoId}\``);} 
-        else {
+                if (nombreGrupoReal === nombre) {
+                    await chat.sendMessage(`⚠️ El nombre proporcionado *${nombre}* coincide con el nombre real del grupo *${nombreGrupoReal}*.`);
+                    return;
+                }
+
+                guardarGrupoLocal(nombre, grupoId);
+                gruposRegistrados[nombre] = grupoId;
+
+                await chat.sendMessage(`✅ Grupo registrado:\n📛 Nombre: *${nombre}*\n🆔 ID: \`${grupoId}\``);
+            } catch (error) {
+                logError("Registrar grupo", error);
+                await chat.sendMessage("❌ No se pudo encontrar el grupo con ese ID.");
+            }
+        } else {
             await chat.sendMessage("❗Formato incorrecto. Usa:\n`registrar grupo nombre: grupo1 grupoId: iddelgrupo`");
         }
-    } catch (error){
-        chat.sendMessage("❌ Error al procesar mensaje de admin bot para registro:", error); 
+    } catch (error) {
+        logError("Registrar grupo externo", error);
     }
-
 }
 
-app.listen(3000, () => console.log('🚀 API corriendo en http://localhost:3000'));
+// Eliminar grupo por nombre
+async function deleteGrup(chat, msg) {
+    try {
+        const nombreMatch = msg.body.match(/nombre:\s*(\S+)/i);
+
+        if (!nombreMatch || !nombreMatch[1]) {
+            await chat.sendMessage("❗Formato incorrecto. Usa:\n`Delete nombre: nombredelgrupo`");
+            return;
+        }
+
+        const nombre = nombreMatch[1].toLowerCase();
+        const eliminado = eliminarGrupoPorNombre(nombre);
+
+        if (eliminado) {
+            delete gruposRegistrados[nombre];
+            await chat.sendMessage(`✅ Grupo eliminado:\n📛 Nombre: *${nombre}*`);
+        } else {
+            await chat.sendMessage(`⚠️ No se encontró el grupo con nombre: *${nombre}*`);
+        }
+
+    } catch (error) {
+        logError("Eliminar grupo", error);
+        await chat.sendMessage("❌ Error al eliminar el grupo.");
+    }
+}
+
+// API en Express
+app.listen(3000, () => console.log(hour(), '🚀 API corriendo en http://localhost:3000'));
+
+// Mostrar uso de memoria cada minuto
+setInterval(() => {
+    const used = process.memoryUsage().heapUsed / 1024 / 1024;
+    console.log(hour(), `📊 Memoria usada: ${Math.round(used * 100) / 100} MB`);
+}, 3600000);
 
 client.initialize();
 
