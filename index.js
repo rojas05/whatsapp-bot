@@ -26,7 +26,7 @@ const client = new Client({
         dataPath: SESSION_PATH
     }),
     puppeteer: {
-        executablePath: '/usr/bin/chromium-browser',
+        //executablePath: '/usr/bin/chromium-browser',
         headless: true,
         args: [
             '--no-sandbox',
@@ -53,16 +53,26 @@ client.on('ready', () => {
     console.log(hour(), '✅ Bot de WhatsApp conectado y listo');
 });
 
+//perdida de coneccion
+client.on('disconnected', (reason) => {
+    console.log('Cliente desconectado', reason);
+});
+
+//estado de cliente
+client.on('change_state', (state) => {
+    console.log('Estado actual de WhatsApp:', state);
+});
+
 // Solo mensajes que salen
 client.on('message_create', async (msg) => {
     if (msg.fromMe) await manejarMensajeAdminBot(msg);
 });
 
-
 // Solo mensajes que llegan
 client.on('message', async (msg) => {
     if (!msg.fromMe) await manejarMensajeAdminBot(msg);
 });
+
 
 // Manejo general
 async function manejarMensajeAdminBot(msg) {
@@ -224,12 +234,17 @@ async function deleteGrup(chat, msg) {
 // API en Express
 app.listen(3000, () => console.log(hour(), '🚀 API corriendo en http://localhost:3000'));
 
-// Mostrar uso de memoria cada minuto
-setInterval(() => {
-    const used = process.memoryUsage().heapUsed / 1024 / 1024;
-    console.log(hour(), `📊 Memoria usada: ${Math.round(used * 100) / 100} MB`);
-}, 3600000);
+// Captura errores no manejados en promesas
+process.on('unhandledRejection', (reason, promise) => {
+    console.error(hour(), '🟥 OJO ===== Unhandled Rejection:', reason);
+});
+
+// Captura errores no atrapados en general
+process.on('uncaughtException', (err) => {
+    console.error(hour(), '🟥 OJO ===== Uncaught Exception:', err);
+});
 
 client.initialize();
 
 
+ 
