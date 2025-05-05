@@ -53,13 +53,13 @@ const client = new Client({
 });
 
 // QR de inicio de sesión
-async function start() {
-    client.on('qr', async (qr) => {
-        ultimoQR = qr
-        console.log(hour(), '📲 Escanea este código QR para conectar:');
-        await enviarQRporTelegram(qr);
-    });    
-}
+
+client.on('qr', async (qr) => {
+    ultimoQR = qr
+    console.log(hour(), '📲 Escanea este código QR para conectar:');
+    await enviarQRporTelegram(qr);
+});    
+
 
 // Bot listo
 client.on('ready', () => {
@@ -322,10 +322,6 @@ telegramBot.onText(/\/restart/, async (msg) => {
         telegramBot.sendMessage(msg.chat.id, '✅ Bot reiniciado con PM2');
         console.log('✅ Bot reiniciado con PM2');
     });
-});
-
-telegramBot.onText(/\/go/, async (msg) => {
-    start()
 });
 
 // API en Express
