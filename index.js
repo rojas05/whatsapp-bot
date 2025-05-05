@@ -15,6 +15,7 @@ app.use(cors());
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const COMANDO = process.emitWarning.COMANDO;
 
 const telegramBot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 const SESSION_PATH = process.env.SESSION_PATH;
@@ -53,11 +54,13 @@ const client = new Client({
 });
 
 // QR de inicio de sesión
+console.log("arrancando")
 client.on('qr', async (qr) => {
     ultimoQR = qr
     console.log(hour(), '📲 Escanea este código QR para conectar:');
     await enviarQRporTelegram(qr);
 });
+
 
 // Bot listo
 client.on('ready', () => {
@@ -98,7 +101,8 @@ client.on('change_state', (state) => {
   
       // Reiniciar con PM2
       const { exec } = require('child_process');
-      exec('pm2 restart whatsapp-bot', (err, stdout, stderr) => {
+      exec(COMANDO
+        , (err, stdout, stderr) => {
         if (err) {
           console.error('❌ Error reiniciando el bot:', err);
           return;
@@ -145,12 +149,45 @@ async function manejarMensajeAdminBot(msg) {
     }
 }
 
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function delayPorTexto({ texto = '', tieneMultimedia = false }) {
+    const velocidadLecturaMsPorCaracter = 45; // ms por caracter
+    const tiempoPorEmoji = 150;               // tiempo adicional por emoji
+    const tiempoMultimedia = 2000;            // tiempo adicional si hay archivo
+
+    // Contar emojis simples usando un regex básico
+    const emojiRegex = /(\p{Extended_Pictographic})/gu;
+    //const emojiRegex = /([\u231A-\u27BF]|[\uD83C-\uDBFF\uDC00-\uDFFF])/g;
+    const cantidadEmojis = (texto.match(emojiRegex) || []).length;
+
+    // Tiempo base por cantidad de texto
+    const tiempoTexto = texto.length * velocidadLecturaMsPorCaracter;
+
+    // Tiempo por emojis
+    const tiempoEmojis = cantidadEmojis * tiempoPorEmoji;
+
+    // Tiempo por multimedia
+    const tiempoExtra = tieneMultimedia ? tiempoMultimedia : 0;
+
+    // Variación aleatoria (+/- 300ms) para parecer más humano
+    const variacion = Math.random() * 300;
+
+    const tiempoTotal = Math.min(tiempoTexto + tiempoEmojis + tiempoExtra + variacion, 8000);
+
+    return new Promise(resolve => setTimeout(resolve, tiempoTotal));
+}
+
+
 // Mensaje desde otro grupo (reenviar)
 async function manejarMensaje(msg) {
     try {
         const chat = await msg.getChat();
 
         if (chat.isGroup) {
+
             const nombreGrupo = chat.name.toLowerCase();
 
             if (gruposRegistrados[nombreGrupo]) {
@@ -158,13 +195,26 @@ async function manejarMensaje(msg) {
                 const grupoDestino = await client.getChatById(destinoId);
                 const contenido = msg.body;
 
+                // Simula lectura
+                await delayPorTexto({
+                    texto: contenido,
+                    tieneMultimedia: true
+                });
+
                 // Mencionar a todos los participantes
                 const mentions = grupoDestino.participants.map(p => p.id._serialized);
                 const text = contenido + '\n';
 
                 try {
                     // Intentar enviar el mensaje a todos los participantes
+                    // Simula escritura
+                    await grupoDestino.sendStateTyping();
+                    await delayPorTexto({
+                        texto: contenido,
+                        tieneMultimedia: true
+                    });
                     await grupoDestino.sendMessage(text, { mentions });
+                    await grupoDestino.clearState();
                     console.log(hour(), `✅ Reenviado de "${chat.name}" a ${destinoId}`);
                 } catch (error) {
                     // En caso de error, loguear el error pero no detener el servicio
@@ -289,14 +339,16 @@ telegramBot.onText(/\/logout/, async (msg) => {
     }
 });
 
-telegramBot.onText(/\/start/, async (msg) => {
+telegramBot.onText(/\/starting/, async (msg) => {
+    console.error(hour(), "Reiniciando...");
     if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
-
-    if (ultimoQR) {
-        telegramBot.sendMessage(msg.chat.id, '📲 Escanea este código QR para conectar:\n\n' + '```\n' + ultimoQR + '\n```', { parse_mode: 'Markdown' });
-    } else {
-        telegramBot.sendMessage(msg.chat.id, '⏳ Esperando a que se genere un nuevo QR...');
-    }
+    exec(COMANDO, (err, stdout, stderr) => {
+        if (err) {
+          console.error('❌ Error reiniciando el bot:', err);
+          return;
+        }
+        console.log('✅ Bot reiniciado con PM2');
+    });
 });
 
 // API en Express
