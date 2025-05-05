@@ -1,16 +1,26 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
 const express = require('express');
 const cors = require('cors');
 const { guardarGrupoLocal, obtenerGruposLocales, eliminarGrupoPorNombre } = require('./storage');
 const { hour } = require('./hora');
+const enviarMensajeTelegram = require('./telegram');
+const enviarQRporTelegram = require('./notificarQR');
+const TelegramBot = require('node-telegram-bot-api');
+
 require('dotenv').config();
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+const telegramBot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 const SESSION_PATH = process.env.SESSION_PATH;
+
+// QR dinámico
+let ultimoQR = null;
 
 // Variables en memoria
 let gruposRegistrados = obtenerGruposLocales();
@@ -43,9 +53,10 @@ const client = new Client({
 });
 
 // QR de inicio de sesión
-client.on('qr', (qr) => {
+client.on('qr', async (qr) => {
+    ultimoQR = qr
     console.log(hour(), '📲 Escanea este código QR para conectar:');
-    qrcode.generate(qr, { small: true });
+    await enviarQRporTelegram(qr);
 });
 
 // Bot listo
@@ -54,14 +65,48 @@ client.on('ready', () => {
 });
 
 //perdida de coneccion
-client.on('disconnected', (reason) => {
-    console.log('Cliente desconectado', reason);
+client.on('disconnected', async (reason) => {
+    console.log('Cliente desconectado:', reason);
+
+    const mensaje = `⚠️ *Bot WhatsApp desconectado*
+    *Razón:* \`${reason}\`
+    *Hora:* ${new Date().toLocaleString()}
+    📲 Necesita reiniciar o volver a vincular`;
+
+    await enviarMensajeTelegram(mensaje);
 });
 
 //estado de cliente
 client.on('change_state', (state) => {
-    console.log('Estado actual de WhatsApp:', state);
-});
+    console.log('📡 Estado de conexión cambiado:', state);
+  
+    // Lista de estados donde es mejor reiniciar
+    const estadosCriticos = [
+      'CONFLICT',
+      'TOS_BLOCK',
+      'PROXYBLOCK',
+      'SMB_TOS_BLOCK',
+      'UNPAIRED',
+      'UNPAIRED_IDLE',
+      'DEPRECATED_VERSION'
+    ];
+  
+    if (estadosCriticos.includes(state)) {
+      console.log(`⚠️ Estado crítico detectado (${state}), reiniciando el bot...`);
+  
+      // Si tienes una notificación por Telegram, también puedes agregarla aquí
+  
+      // Reiniciar con PM2
+      const { exec } = require('child_process');
+      exec('pm2 restart whatsapp-bot', (err, stdout, stderr) => {
+        if (err) {
+          console.error('❌ Error reiniciando el bot:', err);
+          return;
+        }
+        console.log('✅ Bot reiniciado con PM2');
+      });
+    }
+  })
 
 // Solo mensajes que salen
 client.on('message_create', async (msg) => {
@@ -78,7 +123,7 @@ client.on('message', async (msg) => {
 async function manejarMensajeAdminBot(msg) {
     try {
         const chat = await msg.getChat();
-        const isAdminBot = chat.isGroup && chat.name.toLowerCase() === 'adminbot';
+        const isAdminBot = chat.isGroup && chat.name.toLowerCase() === 'adminbottest';
         const body = msg.body.toLowerCase();
 
         if (isAdminBot) {
@@ -230,6 +275,29 @@ async function deleteGrup(chat, msg) {
         await chat.sendMessage("❌ Error al eliminar el grupo.");
     }
 }
+
+// Escuchar comandos en Telegram
+telegramBot.onText(/\/logout/, async (msg) => {
+    if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+
+    try {
+        await client.logout();
+        telegramBot.sendMessage(msg.chat.id, '📴 Sesión de WhatsApp cerrada.');
+    } catch (err) {
+        telegramBot.sendMessage(msg.chat.id, '❌ Error al cerrar sesión.');
+        logError("Telegram Logout", err);
+    }
+});
+
+telegramBot.onText(/\/start/, async (msg) => {
+    if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+
+    if (ultimoQR) {
+        telegramBot.sendMessage(msg.chat.id, '📲 Escanea este código QR para conectar:\n\n' + '```\n' + ultimoQR + '\n```', { parse_mode: 'Markdown' });
+    } else {
+        telegramBot.sendMessage(msg.chat.id, '⏳ Esperando a que se genere un nuevo QR...');
+    }
+});
 
 // API en Express
 app.listen(3000, () => console.log(hour(), '🚀 API corriendo en http://localhost:3000'));
