@@ -7,6 +7,8 @@ const enviarMensajeTelegram = require('./telegram');
 const enviarQRporTelegram = require('./notificarQR');
 const TelegramBot = require('node-telegram-bot-api');
 
+const { exec } = require('child_process');
+
 require('dotenv').config();
 
 const app = express();
@@ -15,13 +17,10 @@ app.use(cors());
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const COMANDO = process.emitWarning.COMANDO;
+const COMANDO = process.env.COMANDO;
 
 const telegramBot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 const SESSION_PATH = process.env.SESSION_PATH;
-
-// QR dinámico
-let ultimoQR = null;
 
 // Variables en memoria
 let gruposRegistrados = obtenerGruposLocales();
@@ -37,7 +36,7 @@ const client = new Client({
         dataPath: SESSION_PATH
     }),
     puppeteer: {
-        //executablePath: '/usr/bin/chromium-browser',
+        executablePath: '/usr/bin/chromium-browser',
         headless: true,
         args: [
             '--no-sandbox',
@@ -54,13 +53,13 @@ const client = new Client({
 });
 
 // QR de inicio de sesión
-console.log("arrancando")
-client.on('qr', async (qr) => {
-    ultimoQR = qr
-    console.log(hour(), '📲 Escanea este código QR para conectar:');
-    await enviarQRporTelegram(qr);
-});
-
+async function start() {
+    client.on('qr', async (qr) => {
+        ultimoQR = qr
+        console.log(hour(), '📲 Escanea este código QR para conectar:');
+        await enviarQRporTelegram(qr);
+    });    
+}
 
 // Bot listo
 client.on('ready', () => {
@@ -153,33 +152,12 @@ function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function delayPorTexto({ texto = '', tieneMultimedia = false }) {
-    const velocidadLecturaMsPorCaracter = 45; // ms por caracter
-    const tiempoPorEmoji = 150;               // tiempo adicional por emoji
-    const tiempoMultimedia = 2000;            // tiempo adicional si hay archivo
-
-    // Contar emojis simples usando un regex básico
-    const emojiRegex = /(\p{Extended_Pictographic})/gu;
-    //const emojiRegex = /([\u231A-\u27BF]|[\uD83C-\uDBFF\uDC00-\uDFFF])/g;
-    const cantidadEmojis = (texto.match(emojiRegex) || []).length;
-
-    // Tiempo base por cantidad de texto
-    const tiempoTexto = texto.length * velocidadLecturaMsPorCaracter;
-
-    // Tiempo por emojis
-    const tiempoEmojis = cantidadEmojis * tiempoPorEmoji;
-
-    // Tiempo por multimedia
-    const tiempoExtra = tieneMultimedia ? tiempoMultimedia : 0;
-
-    // Variación aleatoria (+/- 300ms) para parecer más humano
-    const variacion = Math.random() * 300;
-
-    const tiempoTotal = Math.min(tiempoTexto + tiempoEmojis + tiempoExtra + variacion, 8000);
-
-    return new Promise(resolve => setTimeout(resolve, tiempoTotal));
+// Simula delay con base en la cantidad de caracteres del mensaje
+function delayPorTexto(texto, velocidadLecturaMsPorCaracter = 50) {
+    const caracteres = texto.length;
+    const tiempo = Math.min(caracteres * velocidadLecturaMsPorCaracter, 5000); // máximo 5s
+    return new Promise(resolve => setTimeout(resolve, tiempo));
 }
-
 
 // Mensaje desde otro grupo (reenviar)
 async function manejarMensaje(msg) {
@@ -196,10 +174,7 @@ async function manejarMensaje(msg) {
                 const contenido = msg.body;
 
                 // Simula lectura
-                await delayPorTexto({
-                    texto: contenido,
-                    tieneMultimedia: true
-                });
+                await delayPorTexto(contenido);
 
                 // Mencionar a todos los participantes
                 const mentions = grupoDestino.participants.map(p => p.id._serialized);
@@ -209,10 +184,7 @@ async function manejarMensaje(msg) {
                     // Intentar enviar el mensaje a todos los participantes
                     // Simula escritura
                     await grupoDestino.sendStateTyping();
-                    await delayPorTexto({
-                        texto: contenido,
-                        tieneMultimedia: true
-                    });
+                    await delayPorTexto(contenido);
                     await grupoDestino.sendMessage(text, { mentions });
                     await grupoDestino.clearState();
                     console.log(hour(), `✅ Reenviado de "${chat.name}" a ${destinoId}`);
@@ -339,7 +311,7 @@ telegramBot.onText(/\/logout/, async (msg) => {
     }
 });
 
-telegramBot.onText(/\/starting/, async (msg) => {
+telegramBot.onText(/\/restart/, async (msg) => {
     console.error(hour(), "Reiniciando...");
     if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
     exec(COMANDO, (err, stdout, stderr) => {
@@ -347,8 +319,13 @@ telegramBot.onText(/\/starting/, async (msg) => {
           console.error('❌ Error reiniciando el bot:', err);
           return;
         }
+        telegramBot.sendMessage(msg.chat.id, '✅ Bot reiniciado con PM2');
         console.log('✅ Bot reiniciado con PM2');
     });
+});
+
+telegramBot.onText(/\/go/, async (msg) => {
+    start()
 });
 
 // API en Express
