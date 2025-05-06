@@ -1,13 +1,16 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
+const { guardarGrupoLocal, 
+    obtenerGruposLocales, 
+    eliminarGrupoPorNombre } = require('./helpers/storage');
+const { hour } = require('./helpers/hora');
+const { delay } = require('./helpers/delay')
+const { logError } = require('./helpers/logError')
+const { exec } = require('child_process');
 const express = require('express');
 const cors = require('cors');
-const { guardarGrupoLocal, obtenerGruposLocales, eliminarGrupoPorNombre } = require('./storage');
-const { hour } = require('./hora');
-const enviarMensajeTelegram = require('./telegram');
-const enviarQRporTelegram = require('./notificarQR');
+const enviarMensajeTelegram = require('./telegram/telegram');
+const enviarQRporTelegram = require('./telegram/notificarQR');
 const TelegramBot = require('node-telegram-bot-api');
-
-const { exec } = require('child_process');
 
 require('dotenv').config();
 
@@ -18,17 +21,11 @@ app.use(cors());
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const COMANDO = process.env.COMANDO;
-
-const telegramBot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 const SESSION_PATH = process.env.SESSION_PATH;
+const telegramBot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
 // Variables en memoria
 let gruposRegistrados = obtenerGruposLocales();
-
-// Función centralizada para errores
-function logError(context, error) {
-    console.error(`${hour()} ::: [${context}]`, error);
-}
 
 // Cliente WhatsApp
 const client = new Client({
@@ -36,7 +33,7 @@ const client = new Client({
         dataPath: SESSION_PATH
     }),
     puppeteer: {
-        executablePath: '/usr/bin/chromium-browser',
+        //executablePath: '/usr/bin/chromium-browser',
         headless: true,
         args: [
             '--no-sandbox',
@@ -53,17 +50,16 @@ const client = new Client({
 });
 
 // QR de inicio de sesión
-
 client.on('qr', async (qr) => {
     ultimoQR = qr
     console.log(hour(), '📲 Escanea este código QR para conectar:');
     await enviarQRporTelegram(qr);
 });    
 
-
 // Bot listo
 client.on('ready', () => {
     console.log(hour(), '✅ Bot de WhatsApp conectado y listo');
+    telegramBot.sendMessage(TELEGRAM_CHAT_ID, '✅ Bot de WhatsApp conectado y listo')
 });
 
 //perdida de coneccion
@@ -98,10 +94,11 @@ client.on('change_state', (state) => {
   
       // Si tienes una notificación por Telegram, también puedes agregarla aquí
   
+      telegramBot.sendMessage(TELEGRAM_CHAT_ID, 'Nos pillaron!!!' + state)
+
       // Reiniciar con PM2
       const { exec } = require('child_process');
-      exec(COMANDO
-        , (err, stdout, stderr) => {
+      exec(COMANDO, (err, stdout, stderr) => {
         if (err) {
           console.error('❌ Error reiniciando el bot:', err);
           return;
@@ -148,17 +145,6 @@ async function manejarMensajeAdminBot(msg) {
     }
 }
 
-function delay(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// Simula delay con base en la cantidad de caracteres del mensaje
-function delayPorTexto(texto, velocidadLecturaMsPorCaracter = 50) {
-    const caracteres = texto.length;
-    const tiempo = Math.min(caracteres * velocidadLecturaMsPorCaracter, 5000); // máximo 5s
-    return new Promise(resolve => setTimeout(resolve, tiempo));
-}
-
 // Mensaje desde otro grupo (reenviar)
 async function manejarMensaje(msg) {
     try {
@@ -174,7 +160,7 @@ async function manejarMensaje(msg) {
                 const contenido = msg.body;
 
                 // Simula lectura
-                await delayPorTexto(contenido);
+                await delay(contenido);
 
                 // Mencionar a todos los participantes
                 const mentions = grupoDestino.participants.map(p => p.id._serialized);
@@ -184,7 +170,7 @@ async function manejarMensaje(msg) {
                     // Intentar enviar el mensaje a todos los participantes
                     // Simula escritura
                     await grupoDestino.sendStateTyping();
-                    await delayPorTexto(contenido);
+                    await delay(contenido);
                     await grupoDestino.sendMessage(text, { mentions });
                     await grupoDestino.clearState();
                     console.log(hour(), `✅ Reenviado de "${chat.name}" a ${destinoId}`);
@@ -324,17 +310,16 @@ telegramBot.onText(/\/restart/, async (msg) => {
     });
 });
 
-// API en Express
-app.listen(3000, () => console.log(hour(), '🚀 API corriendo en http://localhost:3000'));
-
 // Captura errores no manejados en promesas
 process.on('unhandledRejection', (reason, promise) => {
     console.error(hour(), '🟥 OJO ===== Unhandled Rejection:', reason);
+    telegramBot.sendMessage(TELEGRAM_CHAT_ID, 'Algo no anda bien :( ' + reason)
 });
 
 // Captura errores no atrapados en general
 process.on('uncaughtException', (err) => {
     console.error(hour(), '🟥 OJO ===== Uncaught Exception:', err);
+    telegramBot.sendMessage(TELEGRAM_CHAT_ID, 'Algo no anda bien :( ' + err)
 });
 
 client.initialize();
