@@ -53,36 +53,36 @@ async function startBot() {
     });
 
 // -------------------- MANEJADOR DE MENSAJES --------------------
-    sock.ev.on('messages.upsert', async ({ messages }) => {
-        const m = messages[0];
-        if (!m.message || m.key.fromMe) return;
+sock.ev.on('messages.upsert', async ({ messages }) => {
+    const m = messages[0];
+    if (!m.message) return; // Ya no ignoramos fromMe
 
-        const from = m.key.remoteJid;
-        const text = m.message.conversation || m.message.extendedTextMessage?.text || '';
+    const from = m.key.remoteJid;
+    const text = m.message.conversation || m.message.extendedTextMessage?.text || '';
 
-        if (text.startsWith('@t ')) {
-            try {
-                const groupMetadata = await sock.groupMetadata(from);
-                const sender = m.key.participant || m.key.remoteJid;
+    if (text.startsWith('@t ')) {
+        try {
+            const groupMetadata = await sock.groupMetadata(from);
+            const sender = m.key.participant || m.key.remoteJid;
 
-                const esAdmin = groupMetadata.participants.some(
-                    p => p.id === sender && (p.admin === 'admin' || p.admin === 'superadmin')
-                );
+            const esAdmin = groupMetadata.participants.some(
+                p => p.id === sender && (p.admin === 'admin' || p.admin === 'superadmin')
+            );
 
-                if (!esAdmin) {
-                    await enviarMensajeTelegram(`⛔ Usuario ${sender} intentó usar @t sin ser admin.`);
-                    console.log(`⛔ Usuario ${sender} intentó usar @t sin ser admin.`);
-                    return;
-                }
-
-                const mensajeBase = text.replace('@t', '').trim();
-                await mencionarTodos(sock, from, mensajeBase);
-            } catch (error) {
-                manejarError('Error procesando @t', error);
+            if (!esAdmin) {
+                await enviarMensajeTelegram(`⛔ Usuario ${sender} intentó usar @t sin ser admin.`);
+                console.log(`⛔ Usuario ${sender} intentó usar @t sin ser admin.`);
+                return;
             }
+
+            const mensajeBase = text.replace('@t', '').trim();
+            await mencionarTodos(sock, from, mensajeBase);
+        } catch (error) {
+            manejarError('Error procesando @t', error);
         }
-    });
-}
+    }
+});
+
 
 // -------------------- MENCION --------------------
 async function mencionarTodos(sock, groupId, mensajeBase) {
