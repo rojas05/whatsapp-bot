@@ -14,7 +14,7 @@ async function enviarMensajeTelegram(mensaje) {
         text: mensaje
       });
   
-      console.log('✅ Mensaje enviado:', response.data);
+      console.log('✅ Mensaje enviado:');
     } catch (error) {
       console.error('❌ Error al enviar mensaje:', error.response?.data || error.message);
     }

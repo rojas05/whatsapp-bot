@@ -1,328 +1,159 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const { guardarGrupoLocal, 
-    obtenerGruposLocales, 
-    eliminarGrupoPorNombre } = require('./helpers/storage');
-const { hour } = require('./helpers/hora');
-const { delay } = require('./helpers/delay')
-const { logError } = require('./helpers/logError')
-const { exec } = require('child_process');
-const express = require('express');
-const cors = require('cors');
+require('dotenv').config();
+const {
+    makeWASocket,
+    useMultiFileAuthState,
+    fetchLatestBaileysVersion,
+    DisconnectReason
+} = require('@whiskeysockets/baileys');
+const pino = require('pino');
+const TelegramBot = require('node-telegram-bot-api');
+const path = require('path');
+const fs = require('fs');
+
+// -------------------- IMPORTACIONES LOCALES --------------------
 const enviarMensajeTelegram = require('./telegram/telegram');
 const enviarQRporTelegram = require('./telegram/notificarQR');
-const TelegramBot = require('node-telegram-bot-api');
 
-require('dotenv').config();
-
-const app = express();
-app.use(express.json());
-app.use(cors());
-
+// -------------------- VARIABLES DE ENTORNO --------------------
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const COMANDO = process.env.COMANDO;
-const SESSION_PATH = process.env.SESSION_PATH;
 const telegramBot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
-// Variables en memoria
-let gruposRegistrados = obtenerGruposLocales();
+let sock;
 
-// Cliente WhatsApp
-const client = new Client({
-    authStrategy: new LocalAuth({
-        dataPath: SESSION_PATH
-    }),
-    puppeteer: {
-        //executablePath: '/usr/bin/chromium-browser',
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--disable-gpu',
-            '--no-first-run',
-            '--no-zygote',
-            '--single-process',
-            '--disable-extensions'
-        ]
-    }
-});
+// -------------------- CONTROL DE SECION --------------------
+async function startBot() {
+    const { state, saveCreds } = await useMultiFileAuthState('baileys_auth');
+    const { version } = await fetchLatestBaileysVersion();
 
-// QR de inicio de sesión
-client.on('qr', async (qr) => {
-    ultimoQR = qr
-    console.log(hour(), '📲 Escanea este código QR para conectar:');
-    await enviarQRporTelegram(qr);
-});    
+    sock = makeWASocket({
+        version,
+        auth: state,
+        logger: pino({ level: 'silent' })
+    });
 
-// Bot listo
-client.on('ready', () => {
-    console.log(hour(), '✅ Bot de WhatsApp conectado y listo');
-    telegramBot.sendMessage(TELEGRAM_CHAT_ID, '✅ Bot de WhatsApp conectado y listo')
-});
+    sock.ev.on('creds.update', saveCreds);
 
-//perdida de coneccion
-client.on('disconnected', async (reason) => {
-    console.log('Cliente desconectado:', reason);
-
-    const mensaje = `⚠️ *Bot WhatsApp desconectado*
-    *Razón:* \`${reason}\`
-    *Hora:* ${new Date().toLocaleString()}
-    📲 Necesita reiniciar o volver a vincular`;
-
-    await enviarMensajeTelegram(mensaje);
-});
-
-//estado de cliente
-client.on('change_state', (state) => {
-    console.log('📡 Estado de conexión cambiado:', state);
-  
-    // Lista de estados donde es mejor reiniciar
-    const estadosCriticos = [
-      'CONFLICT',
-      'TOS_BLOCK',
-      'PROXYBLOCK',
-      'SMB_TOS_BLOCK',
-      'UNPAIRED',
-      'UNPAIRED_IDLE',
-      'DEPRECATED_VERSION'
-    ];
-  
-    if (estadosCriticos.includes(state)) {
-      console.log(`⚠️ Estado crítico detectado (${state}), reiniciando el bot...`);
-  
-      // Si tienes una notificación por Telegram, también puedes agregarla aquí
-  
-      telegramBot.sendMessage(TELEGRAM_CHAT_ID, 'Nos pillaron!!!' + state)
-
-      // Reiniciar con PM2
-      const { exec } = require('child_process');
-      exec(COMANDO, (err, stdout, stderr) => {
-        if (err) {
-          console.error('❌ Error reiniciando el bot:', err);
-          return;
-        }
-        console.log('✅ Bot reiniciado con PM2');
-      });
-    }
-  })
-
-// Solo mensajes que salen
-client.on('message_create', async (msg) => {
-    if (msg.fromMe) await manejarMensajeAdminBot(msg);
-});
-
-// Solo mensajes que llegan
-client.on('message', async (msg) => {
-    if (!msg.fromMe) await manejarMensajeAdminBot(msg);
-});
-
-
-// Manejo general
-async function manejarMensajeAdminBot(msg) {
-    try {
-        const chat = await msg.getChat();
-        const isAdminBot = chat.isGroup && chat.name.toLowerCase() === 'adminbottest';
-        const body = msg.body.toLowerCase();
-
-        if (isAdminBot) {
-            if (body === 'grupos') {
-                await sentMensaggesAdminGrup(chat);
-            } else if (body.startsWith('delete')) {
-                await deleteGrup(chat, msg);
-            } else if (body.startsWith('registrar grupo')) {
-                await registerMensaggesAdminGrup(chat, msg);
-            }else if (body.startsWith('grupos registrados')) {
-                await sentMensaggesAdminGrupRegister(chat, msg);
-            }
-        } else {
-            await manejarMensaje(msg);
+    sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
+        if (qr) {
+            console.log('📲 QR recibido. Enviando a Telegram...');
+            await enviarQRporTelegram(qr);
         }
 
-    } catch (error) {
-        logError("AdminBot", error);
-    }
-}
-
-// Mensaje desde otro grupo (reenviar)
-async function manejarMensaje(msg) {
-    try {
-        const chat = await msg.getChat();
-
-        if (chat.isGroup) {
-
-            const nombreGrupo = chat.name.toLowerCase();
-
-            if (gruposRegistrados[nombreGrupo]) {
-                const destinoId = gruposRegistrados[nombreGrupo];
-                const grupoDestino = await client.getChatById(destinoId);
-                const contenido = msg.body;
-
-                // Simula lectura
-                await delay(contenido);
-
-                // Mencionar a todos los participantes
-                const mentions = grupoDestino.participants.map(p => p.id._serialized);
-                const text = contenido + '\n';
-
-                try {
-                    // Intentar enviar el mensaje a todos los participantes
-                    // Simula escritura
-                    await grupoDestino.sendStateTyping();
-                    await delay(contenido);
-                    await grupoDestino.sendMessage(text, { mentions });
-                    await grupoDestino.clearState();
-                    console.log(hour(), `✅ Reenviado de "${chat.name}" a ${destinoId}`);
-                } catch (error) {
-                    // En caso de error, loguear el error pero no detener el servicio
-                    logError("Error al reenviar mensaje", error);
-                }
-            }
+        if (connection === 'close') {
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('⚠️ Conexión cerrada. ¿Reconectar?', shouldReconnect);
+            if (shouldReconnect) startBot();
+        } else if (connection === 'open') {
+            console.log('✅ Bot conectado correctamente');
+            await enviarMensajeTelegram('✅ *Bot conectado correctamente a WhatsApp*');
         }
-    } catch (error) {
-        logError("Error en el manejo de mensaje", error);
-    }
-}
+    });
 
-// Mostrar grupos disponibles para mencion
-async function sentMensaggesAdminGrupRegister(chat) {
-    try {
-        if (Object.keys(gruposRegistrados).length === 0) {
-            await chat.sendMessage("🤖 No hay grupos registrados.");
-            return;
-        }
+// -------------------- MANEJADOR DE MENSAJES --------------------
+    sock.ev.on('messages.upsert', async ({ messages }) => {
+        const m = messages[0];
+        if (!m.message || m.key.fromMe) return;
 
-        let respuesta = "📋 *Lista de Grupos Registrados:*\n\n";
-        for (const nombre in gruposRegistrados) {
-            respuesta += `• *${nombre}*\n  ID: \`${gruposRegistrados[nombre]}\`\n\n`;
-        }
+        const from = m.key.remoteJid;
+        const text = m.message.conversation || m.message.extendedTextMessage?.text || '';
 
-        await chat.sendMessage(respuesta);
-    } catch (error) {
-        logError("Mostrar grupos", error);
-    }
-}
-
-//Mensaje de consulta de grupos 
-async function sentMensaggesAdminGrup(chat) {
-    try{
-        const chats = await client.getChats();
-        const grupos = chats.filter(c => c.isGroup);
-        if (grupos.length === 0) {
-            await chat.sendMessage("🤖 No estoy en ningún otro grupo.");
-            return;
-        }
-        let respuesta = "📋 *Lista de Grupos Registrados:*\n\n";
-        for (const grupo of grupos) {
-            respuesta += `• *${grupo.name}*\n  ID: \`${grupo.id._serialized}\`\n\n`;
-        }
-        await chat.sendMessage(respuesta);
-    } catch (error){
-        console.error("❌ Error al procesar mensaje de admin bot:", error); 
-    }
-}
-
-// Registrar nuevo grupo
-async function registerMensaggesAdminGrup(chat, msg) {
-    try {
-        const nombreMatch = msg.body.match(/nombre:\s*(\S+)/i);
-        const idMatch = msg.body.match(/grupoId:\s*([a-zA-Z0-9@.\-_]+)/i);
-
-        if (nombreMatch && idMatch) {
-            const nombre = nombreMatch[1].toLowerCase();
-            const grupoId = idMatch[1];
-
+        if (text.startsWith('@t ')) {
             try {
-                const grupo = await client.getChatById(grupoId);
-                const nombreGrupoReal = grupo.name.toLowerCase();
+                const groupMetadata = await sock.groupMetadata(from);
+                const sender = m.key.participant || m.key.remoteJid;
 
-                if (nombreGrupoReal === nombre) {
-                    await chat.sendMessage(`⚠️ El nombre proporcionado *${nombre}* coincide con el nombre real del grupo *${nombreGrupoReal}*.`);
+                const esAdmin = groupMetadata.participants.some(
+                    p => p.id === sender && (p.admin === 'admin' || p.admin === 'superadmin')
+                );
+
+                if (!esAdmin) {
+                    await enviarMensajeTelegram(`⛔ Usuario ${sender} intentó usar @t sin ser admin.`);
+                    console.log(`⛔ Usuario ${sender} intentó usar @t sin ser admin.`);
                     return;
                 }
 
-                guardarGrupoLocal(nombre, grupoId);
-                gruposRegistrados[nombre] = grupoId;
-
-                await chat.sendMessage(`✅ Grupo registrado:\n📛 Nombre: *${nombre}*\n🆔 ID: \`${grupoId}\``);
+                const mensajeBase = text.replace('@t', '').trim();
+                await mencionarTodos(sock, from, mensajeBase);
             } catch (error) {
-                logError("Registrar grupo", error);
-                await chat.sendMessage("❌ No se pudo encontrar el grupo con ese ID.");
+                manejarError('Error procesando @t', error);
             }
-        } else {
-            await chat.sendMessage("❗Formato incorrecto. Usa:\n`registrar grupo nombre: grupo1 grupoId: iddelgrupo`");
         }
-    } catch (error) {
-        logError("Registrar grupo externo", error);
-    }
+    });
 }
 
-// Eliminar grupo por nombre
-async function deleteGrup(chat, msg) {
+// -------------------- MENCION --------------------
+async function mencionarTodos(sock, groupId, mensajeBase) {
+    const groupMetadata = await sock.groupMetadata(groupId);
+    const participantes = groupMetadata.participants;
+    const mentions = participantes.map(p => p.id);
+
+    const maxPorMensaje = 600;
+    for (let i = 0; i < mentions.length; i += maxPorMensaje) {
+        const bloque = mentions.slice(i, i + maxPorMensaje);
+        await sock.sendMessage(groupId, {
+            text: mensajeBase,
+            mentions: bloque
+        });
+    }
+
+    console.log(`Mencionados ${mentions.length} miembros en ${groupId}`);
+}
+
+// -------------------- TELEGRAM COMANDOS --------------------
+telegramBot.onText(/\/restart/, async (msg) => {
+    if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
     try {
-        const nombreMatch = msg.body.match(/nombre:\s*(\S+)/i);
-
-        if (!nombreMatch || !nombreMatch[1]) {
-            await chat.sendMessage("❗Formato incorrecto. Usa:\n`Delete nombre: nombredelgrupo`");
-            return;
-        }
-
-        const nombre = nombreMatch[1].toLowerCase();
-        const eliminado = eliminarGrupoPorNombre(nombre);
-
-        if (eliminado) {
-            delete gruposRegistrados[nombre];
-            await chat.sendMessage(`✅ Grupo eliminado:\n📛 Nombre: *${nombre}*`);
-        } else {
-            await chat.sendMessage(`⚠️ No se encontró el grupo con nombre: *${nombre}*`);
-        }
-
-    } catch (error) {
-        logError("Eliminar grupo", error);
-        await chat.sendMessage("❌ Error al eliminar el grupo.");
+        exec(COMANDO, (err, stdout, stderr) => {
+            if (err) throw err;
+            telegramBot.sendMessage(msg.chat.id, '✅ Bot reiniciado con PM2');
+            console.log('✅ Bot reiniciado con PM2');
+        });
+    } catch (err) {
+        manejarError('Error reiniciando el bot', err);
     }
-}
+});
 
-// Escuchar comandos en Telegram
 telegramBot.onText(/\/logout/, async (msg) => {
     if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
 
     try {
-        await client.logout();
-        telegramBot.sendMessage(msg.chat.id, '📴 Sesión de WhatsApp cerrada.');
+        if (sock) {
+            await sock.logout();
+            sock = null;
+
+            const authFolder = path.join(__dirname, 'baileys_auth');
+            if (fs.existsSync(authFolder)) {
+                fs.rmSync(authFolder, { recursive: true, force: true });
+            }
+
+            telegramBot.sendMessage(msg.chat.id, '📴 Sesión de WhatsApp cerrada y credenciales eliminadas.');
+        } else {
+            telegramBot.sendMessage(msg.chat.id, '⚠️ No hay ninguna sesión activa.');
+        }
     } catch (err) {
-        telegramBot.sendMessage(msg.chat.id, '❌ Error al cerrar sesión.');
-        logError("Telegram Logout", err);
+        manejarError('Error al cerrar sesión', err);
     }
 });
 
-telegramBot.onText(/\/restart/, async (msg) => {
-    console.error(hour(), "Reiniciando...");
-    if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
-    exec(COMANDO, (err, stdout, stderr) => {
-        if (err) {
-          console.error('❌ Error reiniciando el bot:', err);
-          return;
-        }
-        telegramBot.sendMessage(msg.chat.id, '✅ Bot reiniciado con PM2');
-        console.log('✅ Bot reiniciado con PM2');
-    });
+// -------------------- MANEJADOR GLOBAL DE ERRORES --------------------
+async function manejarError(contexto, error) {
+    const mensaje = `❌ *Error en ${contexto}:*\n\`\`\`${error.stack || error.message}\`\`\``;
+    console.error(mensaje);
+    try {
+        await telegramBot.sendMessage(TELEGRAM_CHAT_ID, mensaje, { parse_mode: 'Markdown' });
+    } catch (e) {
+        console.error("No se pudo enviar el error a Telegram:", e);
+    }
+}
+
+process.on('uncaughtException', (error) => {
+    manejarError('uncaughtException', error);
 });
 
-// Captura errores no manejados en promesas
-process.on('unhandledRejection', (reason, promise) => {
-    console.error(hour(), '🟥 OJO ===== Unhandled Rejection:', reason);
-    telegramBot.sendMessage(TELEGRAM_CHAT_ID, 'Algo no anda bien :( ' + reason)
+process.on('unhandledRejection', (reason) => {
+    manejarError('unhandledRejection', reason instanceof Error ? reason : new Error(reason));
 });
 
-// Captura errores no atrapados en general
-process.on('uncaughtException', (err) => {
-    console.error(hour(), '🟥 OJO ===== Uncaught Exception:', err);
-    telegramBot.sendMessage(TELEGRAM_CHAT_ID, 'Algo no anda bien :( ' + err)
-});
-
-client.initialize();
-
-
- 
+startBot();
