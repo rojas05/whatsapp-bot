@@ -9,6 +9,7 @@ const pino = require('pino');
 const TelegramBot = require('node-telegram-bot-api');
 const path = require('path');
 const fs = require('fs');
+const { exec } = require('child_process');
 
 // -------------------- IMPORTACIONES LOCALES --------------------
 const enviarMensajeTelegram = require('./telegram/telegram');
