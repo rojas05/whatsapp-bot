@@ -53,23 +53,22 @@ async function startBot() {
     });
 
 // -------------------- MANEJADOR DE MENSAJES --------------------
-sock.ev.on('messages.upsert', async ({ messages }) => {
-    const m = messages[0];
-    if (!m.message) return; // Ya no ignoramos fromMe
+    sock.ev.on('messages.upsert', async ({ messages }) => {
+        const m = messages[0];
+        if (!m.message) return; // Ya no ignoramos fromMe
+        const from = m.key.remoteJid;
+        const text = m.message.conversation || m.message.extendedTextMessage?.text || '';
 
-    const from = m.key.remoteJid;
-    const text = m.message.conversation || m.message.extendedTextMessage?.text || '';
-
-    if (text.startsWith('@t ')) {
-        try {
-            const mensajeBase = text.replace('@t', '').trim();
-            await mencionarTodos(sock, from, mensajeBase);
-        } catch (error) {
-            manejarError('Error procesando @t', error);
+        if (text.startsWith('@t ')) {
+            try {
+                const mensajeBase = text.replace('@t', '').trim();
+                await mencionarTodos(sock, from, mensajeBase);
+            } catch (error) {
+                manejarError('Error procesando @t', error);
+            }
         }
-    }
-});
-
+    });
+}
 
 // -------------------- MENCION --------------------
 async function mencionarTodos(sock, groupId, mensajeBase) {
