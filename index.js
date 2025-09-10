@@ -16,7 +16,7 @@ const enviarMensajeTelegram = require('./telegram/telegram');
 const enviarQRporTelegram = require('./telegram/notificarQR');
 
 // -------------------- VARIABLES DE ENTORNO --------------------
-const COMANDOW = process.env.COMANDOW+' ';
+const COMANDOW = process.env.COMANDOW + ' ';
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const COMANDO = process.env.COMANDO;
@@ -38,63 +38,85 @@ async function startBot() {
 
     sock.ev.on('creds.update', saveCreds);
 
-   let reconnectionInProgress = false;
+    let reconnectionInProgress = false;
 
     sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
-        if (qr) {
-            console.log('📲 QR recibido. Enviando a Telegram...');
-            await enviarQRporTelegram(qr);
+    if (qr) {
+        console.log('📲 QR recibido. Enviando a Telegram...');
+        await enviarQRporTelegram(qr);
+        await enviarMensajeTelegram(
+            '📌 Se requiere un *nuevo inicio de sesión*. Escanea el QR enviado para continuar.'
+        );
+        return; // 🚫 No intentar reconectar automáticamente si hay QR
+    }
+
+    if (connection === 'close') {
+        if (reconnectionInProgress) return;
+
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const loggedOut = statusCode === DisconnectReason.loggedOut;
+        console.log(`⚠️ Conexión cerrada. loggedOut: ${loggedOut}`);
+
+        if (loggedOut) {
+            const authFolder = path.join(__dirname, 'baileys_auth');
+            if (fs.existsSync(authFolder)) {
+                fs.rmSync(authFolder, { recursive: true, force: true });
+                console.log('🗑️ Credenciales eliminadas por logout.');
+            }
+            await enviarMensajeTelegram(
+                '📴 *Sesión cerrada.* Se requiere escanear un nuevo QR para continuar.\n\n'
+            );
+            await enviarMensajeTelegram(
+                '¿Deseas reconectar? Responde con *si* para iniciar sesión de nuevo.'
+            );
+            pendingReconnect = true; // esperar confirmación
             return;
         }
 
-        if (connection === 'close') {
-            if (reconnectionInProgress) {
-                console.log('⏳ Reconexión ya en progreso. No preguntar de nuevo.');
-                return;
-            }
-
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
-            const loggedOut = statusCode === DisconnectReason.loggedOut;
-            console.log(`⚠️ Conexión cerrada. loggedOut: ${loggedOut}`);
-
-            if (loggedOut) {
-                const authFolder = path.join(__dirname, 'baileys_auth');
-                if (fs.existsSync(authFolder)) {
-                    fs.rmSync(authFolder, { recursive: true, force: true });
-                    console.log('🗑️ Credenciales eliminadas por logout.');
-                }
-            }
-
+        // 🔄 Intentar reconectar automáticamente una vez si NO se requiere QR
+        reconnectionInProgress = true;
+        try {
+            console.log("🔄 Intentando reconectar automáticamente...");
+            await startBot();
+            reconnectionInProgress = false;
+            return;
+        } catch (err) {
+            console.error("❌ Falló la reconexión automática:", err);
             await enviarMensajeTelegram(
                 '⚠️ *Conexión cerrada.* ¿Deseas reconectar? Responde con *si* para iniciar sesión de nuevo.'
             );
-
-            reconnectionInProgress = true; // <--- MARCAMOS EL PROCESO
             pendingReconnect = true;
-        } else if (connection === 'open') {
-            reconnectionInProgress = false; // <--- RESETEAMOS LA BANDERA
-            console.log('✅ Bot conectado correctamente');
-            await enviarMensajeTelegram(
-                '✅ *Bot conectado correctamente a WhatsApp*\n\n' +
-                '📌 *Recuerda:* tu comando principal es ' + COMANDOW + `.\n` +
-                '⚠️ Si el bot falla o presenta inconvenientes, usa el comando `@jh` mientras el desarrollador soluciona el problema.'
-            );
-
+            reconnectionInProgress = false;
         }
-    });
+    } else if (connection === 'open') {
+        reconnectionInProgress = false;
+        console.log('✅ Bot conectado correctamente');
+        await enviarMensajeTelegram(
+            '✅ *Bot conectado correctamente a WhatsApp*\n\n' +
+            '📌 *Recuerda:* tu comando principal es ' + COMANDOW + `.\n` +
+            '⚠️ Si el bot falla, usa el comando \`@jh\` mientras el desarrollador soluciona el problema.'
+        );
+    }
+});
+
 
     // -------------------- MANEJADOR DE MENSAJES --------------------
     sock.ev.on('messages.upsert', async ({ messages }) => {
         const m = messages[0];
-        if (!m.message) return; // Ahora sí procesamos fromMe también
+        if (!m.message) return;
+
         const from = m.key.remoteJid;
         const text = m.message.conversation || m.message.extendedTextMessage?.text || '';
+
+        // 🛑 Solo procesar en grupos
+        if (!from.endsWith('@g.us')) return;
+
         if (text.startsWith(COMANDOW)) {
             try {
                 const mensajeBase = text.replace(COMANDOW, '').trim();
                 await mencionarTodos(sock, from, mensajeBase);
             } catch (error) {
-                manejarError('Error procesando '+COMANDOW, error);
+                manejarError('Error procesando ' + COMANDOW, error);
             }
         }
     });
@@ -106,7 +128,7 @@ async function mencionarTodos(sock, groupId, mensajeBase) {
     const participantes = groupMetadata.participants;
     const mentions = participantes.map(p => p.id);
 
-    const maxPorMensaje = 600;
+    const maxPorMensaje = 800;
     for (let i = 0; i < mentions.length; i += maxPorMensaje) {
         const bloque = mentions.slice(i, i + maxPorMensaje);
         await sock.sendMessage(groupId, {
@@ -121,19 +143,19 @@ async function mencionarTodos(sock, groupId, mensajeBase) {
 // -------------------- TELEGRAM COMANDOS --------------------
 telegramBot.onText(/\/restart/, async (msg) => {
     if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
-    await restart()
+    await restart(msg.chat.id);
 });
 
 telegramBot.onText(/\/logout/, async (msg) => {
     if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
-        try {
+    try {
         if (sock) {
             await sock.logout();
             sock = null;
 
-            await logout()
-
+            await logout();
             pendingReconnect = true;
+
             telegramBot.sendMessage(msg.chat.id, '📴 Sesión cerrada. ¿Deseas reconectar? Responde con *si* para reconectar.');
         } else {
             telegramBot.sendMessage(msg.chat.id, '⚠️ No hay ninguna sesión activa.');
@@ -142,6 +164,51 @@ telegramBot.onText(/\/logout/, async (msg) => {
         manejarError('Error al cerrar sesión', err);
     }
 });
+
+// -------------------- TELEGRAM COMANDO: FORZAR LOGOUT COMPLETO --------------------
+telegramBot.onText(/\/forcelogout/, async (msg) => {
+    if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+
+    try {
+        // Cerrar sesión de WhatsApp si existe
+        if (sock) {
+            try {
+                await sock.logout();
+            } catch (e) {
+                console.log("⚠️ Sock ya estaba desconectado.");
+            }
+            sock = null;
+        }
+
+        // Eliminar carpeta de credenciales
+        const authFolder = path.join(__dirname, 'baileys_auth');
+        if (fs.existsSync(authFolder)) {
+            fs.rmSync(authFolder, { recursive: true, force: true });
+            console.log("🗑️ Carpeta de sesión eliminada manualmente con /forcelogout");
+        }
+
+        // Avisar al administrador por Telegram
+        await telegramBot.sendMessage(
+            msg.chat.id,
+            "📴 *Se forzó el cierre de sesión y se eliminó la carpeta de credenciales.*\n\n" +
+            "🔄 Reiniciando el bot con PM2 para iniciar sesión limpia..."
+        );
+
+        // Reiniciar con PM2
+        exec(COMANDO, (err) => {
+            if (err) {
+                console.error("❌ Error al reiniciar con PM2:", err);
+                telegramBot.sendMessage(msg.chat.id, "❌ Error al reiniciar con PM2.");
+                return;
+            }
+            console.log("✅ Bot reiniciado con PM2 tras forzar logout.");
+        });
+
+    } catch (err) {
+        manejarError("Error ejecutando /forcelogout", err);
+    }
+});
+
 
 // -------------------- ESCUCHAR RESPUESTA PARA RECONEXIÓN --------------------
 telegramBot.on('message', async (msg) => {
@@ -168,7 +235,6 @@ async function manejarError(contexto, error) {
 
 function esErrorCritico(error) {
     const mensaje = error?.message || error?.toString();
-
     return (
         mensaje.includes('invalid session') ||
         mensaje.includes('baileys') ||
@@ -184,8 +250,9 @@ process.on('uncaughtException', async (err) => {
     console.error('❌ Error no capturado:', err);
 
     if (esErrorCritico(err)) {
-        await enviarMensajeTelegram(`⚠️ *Error crítico detectado:* \n${err.message}\n\nIntentaremos recuperarlo reiniciando el bot.`);
-        setTimeout(() => restart());
+        await enviarMensajeTelegram(`⚠️ *Error crítico detectado:* \n${err.message}\n\n🗑️ Eliminando sesión y reiniciando con PM2...`);
+        await logout();
+        restart();
     } else {
         await enviarMensajeTelegram(`ℹ️ *Error no crítico:* \n${err.message}`);
     }
@@ -193,10 +260,10 @@ process.on('uncaughtException', async (err) => {
 
 process.on('unhandledRejection', async (reason) => {
     console.error('⚠️ Promesa rechazada sin capturar:', reason);
-
     if (esErrorCritico(reason)) {
-        await enviarMensajeTelegram(`⚠️ *Error crítico en promesa:* \n${reason}\n\nReiniciando el bot...`);
-        setTimeout(() => {restart()});
+        await enviarMensajeTelegram(`⚠️ *Error crítico en promesa:* \n${reason}\n\n🗑️ Eliminando sesión y reiniciando con PM2...`);
+        await logout();
+        restart();
     } else {
         await enviarMensajeTelegram(`ℹ️ *Error no crítico en promesa:* \n${reason}`);
     }
@@ -204,16 +271,16 @@ process.on('unhandledRejection', async (reason) => {
 
 async function logout() {
     const authFolder = path.join(__dirname, 'baileys_auth');
-            if (fs.existsSync(authFolder)) {
-                fs.rmSync(authFolder, { recursive: true, force: true });
-            }
+    if (fs.existsSync(authFolder)) {
+        fs.rmSync(authFolder, { recursive: true, force: true });
+    }
 }
 
-async function restart() {
+async function restart(chatId) {
     try {
         exec(COMANDO, (err) => {
             if (err) throw err;
-            telegramBot.sendMessage(msg.chat.id, '✅ Bot reiniciado con PM2');
+            if (chatId) telegramBot.sendMessage(chatId, '✅ Bot reiniciado con PM2');
             console.log('✅ Bot reiniciado con PM2');
         });
     } catch (err) {
