@@ -222,6 +222,42 @@ telegramBot.on('message', async (msg) => {
     }
 });
 
+// -------------------- TELEGRAM COMANDO: ACTUALIZAR CÓDIGO --------------------
+telegramBot.onText(/\/update/, async (msg) => {
+    if (msg.chat.id.toString() !== TELEGRAM_CHAT_ID) return;
+
+    try {
+        await telegramBot.sendMessage(msg.chat.id, "📡 Actualizando código desde Git...");
+
+        exec("git pull origin main", (err, stdout, stderr) => {
+            if (err) {
+                console.error("❌ Error al actualizar código:", err);
+                telegramBot.sendMessage(msg.chat.id, "❌ Error al actualizar código:\n" + stderr);
+                return;
+            }
+
+            console.log("✅ Código actualizado:\n", stdout);
+            telegramBot.sendMessage(msg.chat.id, "✅ Código actualizado:\n```\n" + stdout + "\n```", {
+                parse_mode: "Markdown"
+            });
+
+            // Reiniciar con PM2 para aplicar cambios
+            exec(COMANDO, (err) => {
+                if (err) {
+                    console.error("❌ Error al reiniciar con PM2:", err);
+                    telegramBot.sendMessage(msg.chat.id, "❌ Error al reiniciar con PM2.");
+                    return;
+                }
+                telegramBot.sendMessage(msg.chat.id, "🔄 Bot reiniciado con la última versión del repositorio.");
+            });
+        });
+
+    } catch (err) {
+        manejarError("Error ejecutando /update", err);
+    }
+});
+
+
 // -------------------- MANEJADOR GLOBAL DE ERRORES --------------------
 async function manejarError(contexto, error) {
     const mensaje = `❌ *Error en ${contexto}:*\n\`\`\`${error.stack || error.message}\`\`\``;
