@@ -2,3 +2,5 @@ node_modules
 yarn.lock
 .env
 .wwebjs_cache
+baileys_auth
+qr-code.png
