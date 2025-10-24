@@ -402,6 +402,7 @@ async function logout() {
 }
 
 async function restart(chatId) {
+
   try {
     exec(COMANDO, (err) => {
       if (err) {
